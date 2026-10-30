@@ -234,6 +234,25 @@ button.tcard:active{transform:translateY(2px)}
   background:var(--safe-done) center/contain no-repeat}
 .tcard.locked-in .tn::after{content:"🔒";margin-left:2px;font-size:11px}
 
+/* ---- waiting for the teacher to open the round ---- */
+.waitwrap{display:grid;place-items:center;padding:10px 0}
+.waitpanel{width:100%;max-width:430px;text-align:center;display:grid;gap:12px;
+  justify-items:center}
+.waitpanel .tcard{width:230px}
+.waitpanel .big{font-family:"Jua";font-size:25px;color:#FFE9B8;
+  text-shadow:0 2px 4px rgba(0,0,0,.75)}
+.waitpanel .hint{color:#E8D4A8;text-shadow:0 1px 3px rgba(0,0,0,.7);margin:0}
+.waitpanel .spin{font-size:56px;animation:wob 1.4s ease-in-out infinite}
+@keyframes wob{0%,100%{transform:rotate(-9deg)}50%{transform:rotate(9deg)}}
+.joined{width:100%;margin-top:4px}
+.minirow{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:6px}
+.tchip{display:inline-flex;align-items:center;gap:6px;padding:5px 12px 5px 6px;
+  border-radius:999px;font-family:"Jua";font-size:15px;color:#FFEAC0;
+  background:rgba(32,17,6,.62);border:2px solid var(--gold-dk)}
+.tchip .art{width:40px;height:34px;flex:none;
+  background:var(--cards) no-repeat;background-size:500% 300%;
+  background-position:calc(var(--i)*25%) calc(var(--j)*50%)}
+
 /* ---- 금고 만들기 popup ---- */
 .frame.f-make{max-width:470px;aspect-ratio:560/428;background-image:var(--fr-make)}
 .f-make .mkcard{position:absolute;left:50%;top:-82px;transform:translateX(-50%);
@@ -1253,30 +1272,117 @@ $("#bReset").onclick=()=>{ if(confirm(`${bCls}반 기록(비밀 메뉴·연 금�
 
   box.querySelector("#mkGo").onclick = () => {
     const n = picking; if(!n) return;
-    const nm = (mkName.value || "").trim().slice(0, 10) || (n + "팀");
+    const nm = (mkName.value || "").trim().slice(0, 10) || (n + "번 금고");
     P.team = n; saveP();
     store.set(room() + "/teams/" + n + "/name", nm);       // every tablet sees it
-    ROOM.teams[n] = Object.assign({}, ROOM.teams[n], {name: nm});
+    ROOM.teams[n] = Object.assign({}, ROOM.teams[n], {name: nm, uid: P.uid});
     box.classList.remove("on");
-    const t = ROOM.teams[n];
-    if(t && t.secret) goMission(); else { draft = [null, null, null, null]; goMake(); }
+    renderTeams();
   };
 
-  /* ---------- 팀 고르기: a wall of safes, each with its name plate ---------- */
+  /* ---------- one safe per tablet, handed out automatically ---------- */
+  if(!P.uid){ P.uid = Math.random().toString(36).slice(2, 10); saveP(); }
+
+  function freeSafes(){
+    const out = [];
+    for(let n = 1; n <= MAX_TEAMS; n++){
+      const t = ROOM.teams[n];
+      if(!t || (!t.name && !t.secret && (!t.uid || t.uid === P.uid))) out.push(n);
+    }
+    return out;
+  }
+
+  /* never hand out a safe before the room's current state has arrived,
+     or two tablets would both write themselves onto safe 1 */
+  let roomSeen = false, waited = 0;
+  const _refresh = refresh;
+  refresh = function(){ roomSeen = true; _refresh(); };
+
+  let claiming = false, noRoom = false;
+  function claimSafe(){
+    if(P.team || claiming) return;
+    if(!roomSeen && waited < 3000){ waited += 250; setTimeout(claimSafe, 250); return; }
+    const free = freeSafes();
+    if(!free.length){ noRoom = true; renderTeams(); return; }
+    const n = free[0];
+    claiming = true;
+    store.set(room() + "/teams/" + n + "/uid", P.uid);
+    setTimeout(() => {                       // let the other tablets' writes land
+      claiming = false;
+      const t = ROOM.teams[n] || {};
+      if((t.uid && t.uid !== P.uid) || t.name || t.secret){ claimSafe(); return; }
+      P.team = n; saveP();
+      renderTeams();
+      openMake(n);
+    }, 700);
+  }
+
+  /* ---------- 우리 금고: assigned, named, then waiting for the teacher ---------- */
   renderTeams = function(){
     const g = document.getElementById("teamGrid");
-    g.className = "teamgrid";
-    g.innerHTML = Array.from({length: MAX_TEAMS}, (_, i) => {
-      const n = i + 1, t = ROOM.teams[n] || {}, nm = nameOf(n);
-      const cls = "tcard" + (P.team === n ? " mine" : "") + (t.secret ? " locked-in" : "");
-      return '<button class="' + cls + '" data-t="' + n + '" ' + cardOf(n) + '>' +
-               '<span class="art"></span>' +
-               '<span class="plate">' + (nm ? esc(nm) : n + "팀") + '</span>' +
-               '<span class="tn">' + n + '</span>' +
-             '</button>';
-    }).join("");
-    g.querySelectorAll(".tcard").forEach(b => b.onclick = () => openMake(+b.dataset.t));
+    const head = document.querySelector("#scr-team .chalk");
+    const brand = document.querySelector("#scr-team .brand");
+
+    if(started() && P.team && nameOf(P.team)){     // the round is open — go and play
+      const t = ROOM.teams[P.team];
+      if(t && t.secret) goMission(); else { draft = [null, null, null, null]; goMake(); }
+      return;
+    }
+
+    if(!P.team && !noRoom){                        // still being handed one
+      if(brand) brand.textContent = "금고를 배정하고 있어요";
+      if(head) head.textContent = "짝과 함께 태블릿 1대를 써요. 잠깐만 기다려 주세요.";
+      g.className = "waitwrap";
+      g.innerHTML = '<div class="waitpanel"><div class="spin">🔐</div>' +
+                    '<div class="big">금고를 배정하는 중…</div></div>';
+      claimSafe();
+      return;
+    }
+
+    if(noRoom){
+      if(brand) brand.textContent = "금고가 다 찼어요";
+      g.className = "waitwrap";
+      g.innerHTML = '<div class="waitpanel"><div class="big">금고가 모두 찼어요</div>' +
+                    '<p class="hint">선생님께 말씀드리세요.</p></div>';
+      return;
+    }
+
+    const mine = P.team, nm = nameOf(mine);
+    if(brand) brand.textContent = nm ? "우리 금고 — " + nm : "우리 금고 이름 정하기";
+    if(head) head.textContent = nm
+      ? "선생님이 ▶ 게임 시작을 누르면 문제가 열려요."
+      : "금고 이름을 정해 주세요.";
+
+    const others = Array.from({length: MAX_TEAMS}, (_, i) => i + 1)
+      .filter(n => n !== mine && nameOf(n));
+    g.className = "waitwrap";
+    g.innerHTML =
+      '<div class="waitpanel">' +
+        '<button class="tcard mine" id="myCardBig" ' + cardOf(mine) + '>' +
+          '<span class="art"></span>' +
+          '<span class="plate">' + (nm ? esc(nm) : mine + "번 금고") + '</span>' +
+          '<span class="tn">' + mine + '</span>' +
+        '</button>' +
+        (nm ? '<div class="big">선생님을 기다리는 중…</div>' +
+              '<p class="hint">금고 이름을 바꾸려면 금고를 누르세요.</p>'
+            : '<button class="btn" id="nameNow">금고 이름 정하기</button>') +
+        (others.length
+          ? '<div class="joined"><p class="hint">들어온 금고 ' + others.length + '개</p>' +
+            '<div class="minirow">' + others.map(n =>
+              '<span class="tchip" ' + cardOf(n) + '><i class="art"></i>' +
+              esc(nameOf(n)) + '</span>').join("") + '</div></div>'
+          : '') +
+      '</div>';
+    const big = g.querySelector("#myCardBig");
+    if(big) big.onclick = () => openMake(mine);
+    const nn = g.querySelector("#nameNow");
+    if(nn) nn.onclick = () => openMake(mine);
   };
+
+  /* questions stay shut until the teacher opens the round */
+  const _goMake = goMake, _goMission = goMission;
+  goMake = function(){ if(!started()){ goTeam(); return; } _goMake(); };
+  goMission = function(){ if(!started()){ goTeam(); return; } _goMission(); };
 
   /* ---------- 미션: locked safes look alike; only ours keeps its colour ---------- */
   renderMission = function(){
